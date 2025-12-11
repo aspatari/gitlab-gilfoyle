@@ -1,0 +1,390 @@
+# ===========================================
+# Gilfoyle AI Agent - GitLab CI/CD Pipeline
+# ===========================================
+
+stages:
+  - validate
+  - build
+  - test
+  - demo
+  - deploy
+
+variables:
+  PYTHON_VERSION: "3.11"
+  UV_VERSION: "0.9.17"
+  DOCKER_TLS_CERTDIR: "/certs"
+  # Set in GitLab CI/CD Variables (masked/protected):
+  # - ANTHROPIC_API_KEY
+  # - GITLAB_TOKEN
+  # - GITLAB_WEBHOOK_SECRET
+  # - TEAMWORK_API_KEY
+
+# ===========================================
+# Templates
+# ===========================================
+
+.python-base:
+  image: python:${PYTHON_VERSION}-slim
+  before_script:
+    - pip install uv==${UV_VERSION}
+    - uv sync --dev
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-python"
+    paths:
+      - .venv/
+      - .cache/
+
+.docker-base:
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+
+# ===========================================
+# Stage: Validate
+# ===========================================
+
+lint:
+  extends: .python-base
+  stage: validate
+  script:
+    - echo "Running Ruff linter..."
+    - uv run ruff check src/ tests/
+    - echo "Running Ruff formatter check..."
+    - uv run ruff format --check src/ tests/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+typecheck:
+  extends: .python-base
+  stage: validate
+  script:
+    - echo "Running MyPy type checker..."
+    - uv run mypy src/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: true  # Type errors shouldn't block initially
+
+# ===========================================
+# Stage: Build
+# ===========================================
+
+build:docker:
+  extends: .docker-base
+  stage: build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t gilfoyle:${CI_COMMIT_SHA} .
+    - docker tag gilfoyle:${CI_COMMIT_SHA} gilfoyle:latest
+    # Push to registry if configured
+    - |
+      if [ -n "$CI_REGISTRY" ]; then
+        echo "Pushing to registry..."
+        docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+        docker tag gilfoyle:${CI_COMMIT_SHA} $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA}
+        docker tag gilfoyle:${CI_COMMIT_SHA} $CI_REGISTRY_IMAGE:latest
+        docker push $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA}
+        docker push $CI_REGISTRY_IMAGE:latest
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# ===========================================
+# Stage: Test
+# ===========================================
+
+test:unit:
+  extends: .python-base
+  stage: test
+  script:
+    - echo "Running unit tests..."
+    - uv run pytest tests/unit/ -v --cov=src/gilfoyle --cov-report=xml --cov-report=term
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+      junit: junit.xml
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test:integration:
+  extends: .python-base
+  stage: test
+  script:
+    - echo "Running integration tests..."
+    - uv run pytest tests/integration/ -v
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - test:unit
+  allow_failure: true  # Integration tests may need external services
+
+# ===========================================
+# Stage: Demo - Gilfoyle Agent Demonstration
+# ===========================================
+
+demo:agent-health:
+  extends: .python-base
+  stage: demo
+  script:
+    - echo "=== Gilfoyle Agent Health Check ==="
+    - |
+      uv run python << 'PYTHON_SCRIPT'
+      import asyncio
+      import os
+
+      async def test_agent():
+          """Test that the agent can be initialized."""
+          from pydantic_ai import Agent
+
+          api_key = os.environ.get("ANTHROPIC_API_KEY")
+          if not api_key:
+              print("⚠️ ANTHROPIC_API_KEY not set, skipping LLM test")
+              return
+
+          agent = Agent(
+              "anthropic:claude-sonnet-4-20250514",
+              system_prompt="You are a helpful assistant. Respond with OK."
+          )
+          result = await agent.run("Are you working? Reply with just OK.")
+          print(f"Agent Response: {result.data}")
+          print("✓ Agent health check passed!")
+
+      asyncio.run(test_agent())
+      PYTHON_SCRIPT
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  allow_failure: true
+
+demo:review-simulation:
+  extends: .python-base
+  stage: demo
+  script:
+    - echo "=== Simulating MR Review ==="
+    - |
+      uv run python << 'PYTHON_SCRIPT'
+      import asyncio
+      import os
+      from pydantic import BaseModel
+      from pydantic_ai import Agent
+      from typing import Literal
+
+      class ReviewComment(BaseModel):
+          file: str
+          line: int
+          severity: Literal["info", "suggestion", "warning", "error"]
+          comment: str
+
+      class ReviewResult(BaseModel):
+          summary: str
+          verdict: Literal["approved", "needs_changes", "needs_discussion"]
+          comments: list[ReviewComment]
+
+      SAMPLE_DIFF = '''
+      diff --git a/src/api.py b/src/api.py
+      @@ -1,5 +1,10 @@
+      +import os
+      +
+       def get_user(user_id):
+      -    query = f"SELECT * FROM users WHERE id = {user_id}"
+      +    query = "SELECT * FROM users WHERE id = ?"
+           return execute_query(query, [user_id])
+      +
+      +API_KEY = "sk-secret-12345"
+      '''
+
+      async def demo():
+          api_key = os.environ.get("ANTHROPIC_API_KEY")
+          if not api_key:
+              print("⚠️ ANTHROPIC_API_KEY not set, skipping demo")
+              return
+
+          agent = Agent(
+              "anthropic:claude-sonnet-4-20250514",
+              result_type=ReviewResult,
+              system_prompt="You are a code reviewer. Review the diff and identify issues."
+          )
+
+          result = await agent.run(f"Review this diff:\n{SAMPLE_DIFF}")
+          review = result.data
+
+          print("=" * 60)
+          print("GILFOYLE REVIEW SIMULATION")
+          print("=" * 60)
+          print(f"Summary: {review.summary}")
+          print(f"Verdict: {review.verdict}")
+          print(f"Comments: {len(review.comments)}")
+          for c in review.comments:
+              print(f"  [{c.severity}] {c.file}:{c.line} - {c.comment}")
+          print("✓ Demo completed!")
+
+      asyncio.run(demo())
+      PYTHON_SCRIPT
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  needs:
+    - demo:agent-health
+  allow_failure: true
+
+demo:full-workflow:
+  extends: .python-base
+  stage: demo
+  script:
+    - echo "=== Full Gilfoyle Workflow Demo ==="
+    - |
+      uv run python << 'PYTHON_SCRIPT'
+      import asyncio
+      import os
+      from pydantic import BaseModel, Field
+      from pydantic_ai import Agent, RunContext
+      from typing import Literal
+      from dataclasses import dataclass
+
+      class InlineComment(BaseModel):
+          file_path: str
+          line_number: int
+          line_type: Literal["old", "new"] = "new"
+          comment: str
+          severity: Literal["info", "suggestion", "warning", "error"]
+
+      class ReviewResult(BaseModel):
+          summary: str
+          overall_assessment: Literal["approved", "needs_changes", "needs_discussion"]
+          inline_comments: list[InlineComment] = Field(default_factory=list)
+          general_comments: list[str] = Field(default_factory=list)
+          referenced_standards: list[str] = Field(default_factory=list)
+          task_context_used: bool = False
+
+      @dataclass
+      class Deps:
+          coding_standards: str
+          task_info: str
+
+      STANDARDS = """
+      # Coding Standards
+      1. No hardcoded secrets
+      2. Use parameterized queries
+      3. All functions need docstrings
+      """
+
+      DIFF = '''
+      diff --git a/app/api.py b/app/api.py
+      @@ -1,5 +1,12 @@
+       from fastapi import FastAPI
+       app = FastAPI()
+
+       @app.get("/users/{user_id}")
+      -def get_user(user_id: int):
+      -    return {"user_id": user_id}
+      +async def get_user(user_id):
+      +    try:
+      +        query = f"SELECT * FROM users WHERE id = {user_id}"
+      +        return db.execute(query)
+      +    except:
+      +        return {"error": "failed"}
+      +
+      +API_KEY = "sk-secret-12345"
+      '''
+
+      async def run_demo():
+          api_key = os.environ.get("ANTHROPIC_API_KEY")
+          if not api_key:
+              print("⚠️ ANTHROPIC_API_KEY not set, skipping full demo")
+              return
+
+          agent = Agent(
+              "anthropic:claude-sonnet-4-20250514",
+              deps_type=Deps,
+              result_type=ReviewResult,
+              system_prompt="You are Gilfoyle, a code reviewer. Be thorough."
+          )
+
+          @agent.tool
+          async def get_standards(ctx: RunContext[Deps]) -> str:
+              return ctx.deps.coding_standards
+
+          deps = Deps(coding_standards=STANDARDS, task_info="")
+
+          result = await agent.run(f"Review:\n{DIFF}", deps=deps)
+          review = result.data
+
+          print("=" * 70)
+          print("GILFOYLE FULL WORKFLOW DEMO")
+          print("=" * 70)
+          print(f"\n📋 Summary: {review.summary}")
+          print(f"🎯 Verdict: {review.overall_assessment}")
+
+          if review.inline_comments:
+              print(f"\n💬 Inline Comments ({len(review.inline_comments)}):")
+              for c in review.inline_comments:
+                  emoji = {"error": "❌", "warning": "⚠️", "suggestion": "💡", "info": "ℹ️"}
+                  print(f"  {emoji.get(c.severity, '•')} {c.file_path}:{c.line_number} - {c.comment}")
+
+          if review.general_comments:
+              print(f"\n📝 General:")
+              for c in review.general_comments:
+                  print(f"  • {c}")
+
+          print("\n" + "=" * 70)
+          print("✅ Full workflow demo completed!")
+
+      asyncio.run(run_demo())
+      PYTHON_SCRIPT
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  needs:
+    - demo:review-simulation
+  allow_failure: true
+
+# ===========================================
+# Stage: Deploy
+# ===========================================
+
+deploy:staging:
+  extends: .docker-base
+  stage: deploy
+  script:
+    - echo "Deploying to staging..."
+    - |
+      if [ -n "$STAGING_HOST" ]; then
+        echo "Deploying to $STAGING_HOST"
+        # Add deployment commands here
+      else
+        echo "STAGING_HOST not set, skipping deployment"
+      fi
+  environment:
+    name: staging
+    url: https://gilfoyle-staging.${CI_SERVER_HOST}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  when: manual
+
+deploy:production:
+  extends: .docker-base
+  stage: deploy
+  script:
+    - echo "Deploying to production..."
+    - |
+      if [ -n "$PRODUCTION_HOST" ]; then
+        echo "Deploying to $PRODUCTION_HOST"
+        # Add deployment commands here
+      else
+        echo "PRODUCTION_HOST not set, skipping deployment"
+      fi
+  environment:
+    name: production
+    url: https://gilfoyle.${CI_SERVER_HOST}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  when: manual
+  needs:
+    - deploy:staging

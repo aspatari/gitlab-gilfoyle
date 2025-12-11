@@ -1,0 +1,54 @@
+# Gilfoyle AI Agent - Docker Compose Configuration
+# Development and simple deployment setup
+
+version: "3.8"
+
+services:
+  gilfoyle:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gilfoyle
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Application
+      - APP_NAME=${APP_NAME:-Gilfoyle}
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HOST=0.0.0.0
+      - PORT=8000
+      # GitLab
+      - GITLAB_URL=${GITLAB_URL}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET}
+      - GILFOYLE_USER_ID=${GILFOYLE_USER_ID}
+      - GILFOYLE_USERNAME=${GILFOYLE_USERNAME:-gilfoyle}
+      # Teamwork
+      - TEAMWORK_URL=${TEAMWORK_URL:-https://projects.ebs-integrator.com}
+      - TEAMWORK_API_KEY=${TEAMWORK_API_KEY}
+      # LLM
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-claude-sonnet-4-20250514}
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - gilfoyle-network
+
+networks:
+  gilfoyle-network:
+    driver: bridge

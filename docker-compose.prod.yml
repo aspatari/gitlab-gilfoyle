@@ -1,0 +1,65 @@
+# Gilfoyle AI Agent - Production Docker Compose Configuration
+# Use this for production deployments
+
+version: "3.8"
+
+services:
+  gilfoyle:
+    image: ${REGISTRY:-}gilfoyle:${VERSION:-latest}
+    container_name: gilfoyle-prod
+    restart: always
+    ports:
+      - "127.0.0.1:8000:8000"  # Only bind to localhost (use reverse proxy)
+    environment:
+      # Application
+      - APP_NAME=Gilfoyle
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - HOST=0.0.0.0
+      - PORT=8000
+      # GitLab
+      - GITLAB_URL=${GITLAB_URL}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET}
+      - GILFOYLE_USER_ID=${GILFOYLE_USER_ID}
+      - GILFOYLE_USERNAME=${GILFOYLE_USERNAME:-gilfoyle}
+      # Teamwork
+      - TEAMWORK_URL=${TEAMWORK_URL}
+      - TEAMWORK_API_KEY=${TEAMWORK_API_KEY}
+      # LLM
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-claude-sonnet-4-20250514}
+      # Rate limiting
+      - MAX_CONCURRENT_REVIEWS=${MAX_CONCURRENT_REVIEWS:-5}
+      - REVIEW_TIMEOUT_SECONDS=${REVIEW_TIMEOUT_SECONDS:-300}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - gilfoyle-network
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+networks:
+  gilfoyle-network:
+    driver: bridge
