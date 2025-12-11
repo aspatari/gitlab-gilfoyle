@@ -47,17 +47,19 @@ We will build **Gilfoyle**, an AI-powered code review agent using **Pydantic AI*
 
 ### Technology Stack
 
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| AI Framework | [Pydantic AI](https://ai.pydantic.dev/) | Type-safe, structured outputs, tool support, async-first |
-| LLM Provider | OpenAI GPT-4 / Anthropic Claude | High-quality code understanding and review capabilities |
-| Runtime | Python 3.11+ | Pydantic AI requirement, modern async support |
-| Package Manager | `uv` | Fast, reliable Python package management |
-| Web Framework | FastAPI | Webhook handling, health checks, async support |
-| GitLab Integration | `python-gitlab` | Official GitLab API client |
-| Teamwork Integration | REST API | Custom client for Teamwork API |
-| Deployment | Docker + Kubernetes / Docker Compose | Container-based deployment for scalability |
-| Configuration | Pydantic Settings | Type-safe configuration management |
+| Component | Technology | Version | Rationale |
+|-----------|------------|---------|-----------|
+| AI Framework | [Pydantic AI](https://ai.pydantic.dev/) | 1.30.1+ | Type-safe, structured outputs, tool support, async-first |
+| LLM Provider | Anthropic Claude | claude-sonnet-4-20250514 | High-quality code understanding and review capabilities |
+| Data Validation | Pydantic | 2.12.5+ | Type-safe data validation and settings |
+| Runtime | Python | 3.11+ | Pydantic AI requirement, modern async support |
+| Package Manager | `uv` | 0.9.17+ | Fast, reliable Python package management |
+| Web Framework | FastAPI | 0.124.2+ | Webhook handling, health checks, async support |
+| GitLab Integration | `python-gitlab` | 5.6.0+ | Official GitLab API client |
+| HTTP Client | `httpx` | 0.28.1+ | Async HTTP client for Teamwork API |
+| Teamwork Integration | REST API | - | Custom client for Teamwork API |
+| Deployment | Docker + Kubernetes / Docker Compose | - | Container-based deployment for scalability |
+| Configuration | Pydantic Settings | 2.8.1+ | Type-safe configuration management |
 
 ### Architecture Overview
 
@@ -177,7 +179,7 @@ class ReviewDependencies(BaseModel):
     mr_iid: int
 
 gilfoyle_agent = Agent(
-    "openai:gpt-4o",  # or "anthropic:claude-3-5-sonnet"
+    "anthropic:claude-sonnet-4-20250514",  # Recommended for code review
     deps_type=ReviewDependencies,
     result_type=ReviewResult,
     system_prompt="""
@@ -425,10 +427,18 @@ gilfoyle/
 
 ```python
 # src/gilfoyle/config.py
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import SecretStr
 
 class Settings(BaseSettings):
+    """Gilfoyle AI Agent Configuration."""
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+    
     # Application
     app_name: str = "Gilfoyle"
     debug: bool = False
@@ -443,18 +453,19 @@ class Settings(BaseSettings):
     teamwork_url: str = "https://projects.ebs-integrator.com"
     teamwork_api_key: SecretStr
     
-    # LLM
-    llm_provider: str = "openai"  # or "anthropic"
-    openai_api_key: SecretStr | None = None
+    # LLM Configuration
+    llm_provider: str = "anthropic"  # "anthropic" or "openai"
     anthropic_api_key: SecretStr | None = None
-    llm_model: str = "gpt-4o"
+    openai_api_key: SecretStr | None = None
+    llm_model: str = "claude-sonnet-4-20250514"  # or "gpt-4o" for OpenAI
     
     # Observability
     log_level: str = "INFO"
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    @property
+    def llm_model_string(self) -> str:
+        """Return the full model string for Pydantic AI."""
+        return f"{self.llm_provider}:{self.llm_model}"
 ```
 
 ### Deployment
@@ -570,6 +581,7 @@ services:
 - [GitLab Discussions API](https://docs.gitlab.com/ee/api/discussions.html)
 - [Teamwork API Documentation](https://developer.teamwork.com/)
 - [python-gitlab Library](https://python-gitlab.readthedocs.io/)
+- [Setup and Testing Guide](../SETUP_AND_TESTING_GUIDE.md) - Comprehensive setup, API key generation, and testing instructions
 
 ## Decision Makers
 
