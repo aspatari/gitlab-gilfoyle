@@ -50,9 +50,9 @@ lint:
   stage: validate
   script:
     - echo "Running Ruff linter..."
-    - uv run ruff check src/ tests/
+    - .venv/bin/ruff check src/ tests/
     - echo "Running Ruff formatter check..."
-    - uv run ruff format --check src/ tests/
+    - .venv/bin/ruff format --check src/ tests/
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
